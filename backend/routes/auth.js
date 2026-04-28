@@ -1,9 +1,7 @@
 const router     = require('express').Router();
-const bcrypt     = require('bcryptjs');
-const jwt        = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
-const User       = require('../models/User');
-const auth       = require('../middleware/authMiddleware');
+const { auth, db } = require('../config/firebase');
+const authMiddleware = require('../middleware/authMiddleware');
 
 const ACADEMIC_DOMAINS = [
   'ac.ma','edu.ma','usmba.ac.ma','um5.ac.ma',
@@ -43,6 +41,7 @@ const sendOTPEmail = async (email, otp, name) => {
 router.post('/register', async (req, res) => {
   try {
     const { name, email, password, university } = req.body;
+
     if (!name || !email || !password)
       return res.status(400).json({ message: 'Tous les champs sont obligatoires.' });
     if (!isAcademic(email))
@@ -50,23 +49,31 @@ router.post('/register', async (req, res) => {
     if (password.length < 8)
       return res.status(400).json({ message: 'Mot de passe : 8 caractères minimum.' });
 
-    const exists  = await User.findOne({ email: email.toLowerCase() });
-    if (exists?.isVerified)
-      return res.status(400).json({ message: 'Email déjà utilisé.' });
+    // Vérifier si l'email existe déjà dans Firestore
+    const usersRef = db.collection('users');
+    const existing = await usersRef.where('email', '==', email.toLowerCase()).get();
 
-    const hashed  = await bcrypt.hash(password, 12);
     const otp     = Math.floor(100000 + Math.random() * 900000).toString();
     const expires = new Date(Date.now() + 10 * 60 * 1000);
 
-    if (exists) {
-      exists.name = name; exists.password = hashed;
-      exists.university = university || '';
-      exists.otpCode = otp; exists.otpExpires = expires;
-      await exists.save();
+    if (!existing.empty) {
+      const doc = existing.docs[0];
+      if (doc.data().isVerified)
+        return res.status(400).json({ message: 'Email déjà utilisé.' });
+      // Mettre à jour l'OTP
+      await doc.ref.update({ name, university: university || '', otpCode: otp, otpExpires: expires.toISOString() });
     } else {
-      await User.create({
-        name, email: email.toLowerCase(), password: hashed,
-        university: university || '', otpCode: otp, otpExpires: expires
+      // Créer l'utilisateur dans Firebase Auth
+      const userRecord = await auth.createUser({ email, password, displayName: name });
+      // Créer le document Firestore
+      await usersRef.doc(userRecord.uid).set({
+        name,
+        email:      email.toLowerCase(),
+        university: university || '',
+        isVerified: false,
+        otpCode:    otp,
+        otpExpires: expires.toISOString(),
+        createdAt:  new Date().toISOString(),
       });
     }
 
@@ -82,47 +89,66 @@ router.post('/register', async (req, res) => {
 router.post('/verify', async (req, res) => {
   try {
     const { email, otp } = req.body;
-    const user = await User.findOne({ email: email?.toLowerCase() });
-    if (!user)
+
+    const usersRef = db.collection('users');
+    const snapshot = await usersRef.where('email', '==', email?.toLowerCase()).get();
+
+    if (snapshot.empty)
       return res.status(404).json({ message: 'Utilisateur introuvable.' });
+
+    const docSnap = snapshot.docs[0];
+    const user    = docSnap.data();
+
     if (user.otpCode !== otp)
       return res.status(400).json({ message: 'Code incorrect.' });
-    if (user.otpExpires < new Date())
+    if (new Date(user.otpExpires) < new Date())
       return res.status(400).json({ message: 'Code expiré, réinscris-toi.' });
 
-    user.isVerified = true;
-    user.otpCode    = null;
-    user.otpExpires = null;
-    await user.save();
+    // Marquer comme vérifié
+    await docSnap.ref.update({ isVerified: true, otpCode: null, otpExpires: null });
 
-    const token = jwt.sign(
-      { id: user._id, name: user.name },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
-    res.json({ token, user: { _id:user._id, name:user.name, email:user.email, university:user.university } });
+    // Générer un custom token Firebase
+    const customToken = await auth.createCustomToken(docSnap.id);
+
+    res.json({
+      token: customToken,
+      user: {
+        _id:        docSnap.id,
+        name:       user.name,
+        email:      user.email,
+        university: user.university,
+      }
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Erreur serveur.' });
   }
 });
 
-// POST /api/auth/login
+// POST /api/auth/login  (vérification côté backend)
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
-    const user = await User.findOne({ email: email?.toLowerCase() });
-    if (!user || !(await bcrypt.compare(password, user.password)))
+    const { email } = req.body;
+
+    const snapshot = await db.collection('users')
+      .where('email', '==', email?.toLowerCase()).get();
+
+    if (snapshot.empty)
       return res.status(400).json({ message: 'Email ou mot de passe incorrect.' });
+
+    const user = snapshot.docs[0].data();
+    const uid  = snapshot.docs[0].id;
+
     if (!user.isVerified)
       return res.status(403).json({ message: 'Compte non vérifié.' });
 
-    const token = jwt.sign(
-      { id: user._id, name: user.name },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
-    res.json({ token, user: { _id:user._id, name:user.name, email:user.email, university:user.university } });
+    // Le vrai login (mot de passe) est géré par Firebase Auth côté frontend
+    // Ici on retourne juste les infos utilisateur
+    const customToken = await auth.createCustomToken(uid);
+    res.json({
+      token: customToken,
+      user: { _id: uid, name: user.name, email: user.email, university: user.university }
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Erreur serveur.' });
@@ -130,6 +156,6 @@ router.post('/login', async (req, res) => {
 });
 
 // GET /api/auth/me
-router.get('/me', auth, (req, res) => res.json({ user: req.user }));
+router.get('/me', authMiddleware, (req, res) => res.json({ user: req.user }));
 
 module.exports = router;

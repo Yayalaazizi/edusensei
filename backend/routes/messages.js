@@ -1,15 +1,23 @@
-const router  = require('express').Router();
-const Message = require('../models/Message');
-const auth    = require('../middleware/authMiddleware');
+const router = require('express').Router();
+const { db } = require('../config/firebase');
+const auth   = require('../middleware/authMiddleware');
 
 router.get('/:room', auth, async (req, res) => {
   try {
-    const messages = await Message.find({ room: req.params.room })
-      .sort({ createdAt: -1 }).limit(50)
-      .populate('user', 'name email')
-      .lean();
-    res.json(messages.reverse());
-  } catch {
+    const snapshot = await db.collection('messages')
+      .where('room', '==', req.params.room)
+      .orderBy('createdAt', 'desc')
+      .limit(50)
+      .get();
+
+    const messages = snapshot.docs.map(doc => ({
+      _id:       doc.id,
+      ...doc.data(),
+    })).reverse();
+
+    res.json(messages);
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ message: 'Erreur serveur.' });
   }
 });
