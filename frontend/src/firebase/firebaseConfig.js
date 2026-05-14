@@ -1,16 +1,15 @@
-// src/firebase/firebaseConfig.js
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
-  apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
-  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.REACT_APP_FIREBASE_APP_ID,
+  apiKey: "AIzaSyBlEio_gChAcIwqn7Yj_xdG-GWcCTQBYqU",
+  authDomain: "educhat-45772.firebaseapp.com",
+  projectId: "educhat-45772",
+  storageBucket: "educhat-45772.firebasestorage.app",
+  messagingSenderId: "568981881827",
+  appId: "1:568981881827:web:e2bec56562fd787dc056d6"
 };
 
 const app = initializeApp(firebaseConfig);

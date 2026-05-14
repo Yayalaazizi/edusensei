@@ -1,16 +1,49 @@
-import axios from 'axios';
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+} from 'firebase/auth';
+import {
+  doc, setDoc, getDoc,
+  collection, query, orderBy, getDocs, addDoc, serverTimestamp
+} from 'firebase/firestore';
+import { auth, db } from '../firebase/firebaseConfig';
 
-const API = axios.create({ baseURL: 'http://localhost:5000/api' });
+// ── Auth ──────────────────────────────────────────────────────────────────────
 
-API.interceptors.request.use((config) => {
-  const token = localStorage.getItem('educhat_token');
-  if (token) config.headers.Authorization = `Bearer ${token}`;
-  return config;
-});
+export const registerUser = async ({ name, email, password, university }) => {
+  const { user } = await createUserWithEmailAndPassword(auth, email, password);
+  await setDoc(doc(db, 'users', user.uid), {
+    name,
+    email,
+    university,
+    createdAt: serverTimestamp(),
+  });
+  return user;
+};
 
-export const registerUser = (data)       => API.post('/auth/register', data);
-export const verifyOTP    = (email, otp) => API.post('/auth/verify', { email, otp });
-export const loginUser    = (data)       => API.post('/auth/login', data);
-export const getMessages  = (room)       => API.get(`/messages/${room}`);
+export const loginUser = async ({ email, password }) => {
+  const { user } = await signInWithEmailAndPassword(auth, email, password);
+  return user;
+};
 
-export default API;
+export const logoutUser = () => signOut(auth);
+
+export const getUser = async (uid) => {
+  const snap = await getDoc(doc(db, 'users', uid));
+  return snap.exists() ? { uid, ...snap.data() } : null;
+};
+
+// ── Messages ──────────────────────────────────────────────────────────────────
+
+export const getMessages = async (room) => {
+  const q = query(collection(db, 'rooms', room, 'messages'), orderBy('createdAt'));
+  const snap = await getDocs(q);
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+};
+
+export const sendMessage = async (room, { text, uid, name }) => {
+  await addDoc(collection(db, 'rooms', room, 'messages'), {
+    text, uid, name, createdAt: serverTimestamp(),
+  });
+};

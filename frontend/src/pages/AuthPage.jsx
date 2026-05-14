@@ -1,6 +1,8 @@
 import { useState, useRef } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { registerUser, verifyOTP, loginUser } from '../services/api';
+import { registerUser, loginUser, getUser } from '../services/api';
+import { sendEmailVerification } from 'firebase/auth';
+import { auth } from '../firebase/firebaseConfig';
 
 const DOMAINS = ['ac.ma','edu.ma','usmba.ac.ma','um5.ac.ma','uca.ac.ma','uae.ac.ma'];
 const isAcademic = (email) => {
@@ -12,10 +14,8 @@ export default function AuthPage() {
   const { login }             = useAuth();
   const [page, setPage]       = useState('login');
   const [form, setForm]       = useState({ name:'', email:'', password:'', university:'' });
-  const [otp,  setOtp]        = useState(['','','','','','']);
   const [error, setError]     = useState('');
   const [loading, setLoading] = useState(false);
-  const otpRefs = useRef([]);
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const go  = (p)   => { setError(''); setPage(p); };
@@ -28,9 +28,10 @@ export default function AuthPage() {
     setLoading(true);
     try {
       await registerUser(form);
+      await sendEmailVerification(auth.currentUser);
       setPage('verify');
     } catch (err) {
-      setError(err.response?.data?.message || 'Erreur serveur.');
+      setError(err.message || 'Erreur serveur.');
     } finally { setLoading(false); }
   };
 
@@ -39,29 +40,36 @@ export default function AuthPage() {
     if (!form.email || !form.password) return setError('Remplis tous les champs.');
     setLoading(true);
     try {
-      const res = await loginUser({ email: form.email, password: form.password });
-      login(res.data.token, res.data.user);
+      await loginUser({ email: form.email, password: form.password });
     } catch (err) {
-      setError(err.response?.data?.message || 'Erreur de connexion.');
+      setError(err.message || 'Erreur de connexion.');
     } finally { setLoading(false); }
   };
 
   const handleVerify = async () => {
     setError('');
-    if (otp.join('').length < 6) return setError('Entre le code à 6 chiffres.');
     setLoading(true);
     try {
-      const res = await verifyOTP(form.email, otp.join(''));
-      login(res.data.token, res.data.user);
+      await auth.currentUser?.reload();
+      if (auth.currentUser?.emailVerified) {
+        await auth.currentUser.getIdToken(true);
+        go('login');
+      } else {
+        setError("Email pas encore vérifié. Clique sur le lien dans l'email.");
+      }
     } catch (err) {
-      setError(err.response?.data?.message || 'Code invalide.');
+      // currentUser is null — user was signed out after verification
+      go('login');
     } finally { setLoading(false); }
   };
 
-  const handleOtp = (i, val) => {
-    if (!/^\d?$/.test(val)) return;
-    const n = [...otp]; n[i] = val; setOtp(n);
-    if (val && i < 5) otpRefs.current[i+1]?.focus();
+  const handleResend = async () => {
+    try {
+      await sendEmailVerification(auth.currentUser);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   const academic = form.email.includes('@') && isAcademic(form.email);
@@ -69,8 +77,10 @@ export default function AuthPage() {
   return (
     <div style={S.wrap}>
       <div style={S.card}>
-        <div style={S.logo}><span style={{fontSize:28}}>🎓</span>
-          <span style={S.logoTxt}>EduChat</span></div>
+        <div style={S.logo}>
+          <span style={{fontSize:28}}>🎓</span>
+          <span style={S.logoTxt}>EduChat</span>
+        </div>
 
         {error && <div style={S.err}>{error}</div>}
 
@@ -114,7 +124,7 @@ export default function AuthPage() {
             <F label="Mot de passe" type="password" placeholder="Min. 8 caractères"
               value={form.password} onChange={v => set('password', v)} />
             <button style={S.btn} type="submit" disabled={loading}>
-              {loading ? 'Envoi...' : 'Recevoir le code de vérification'}
+              {loading ? 'Envoi...' : 'Créer mon compte'}
             </button>
           </form>
           <p style={S.sw}>Déjà inscrit ?{' '}
@@ -125,22 +135,16 @@ export default function AuthPage() {
           <div style={{textAlign:'center'}}>
             <div style={{fontSize:52,marginBottom:12}}>📬</div>
             <h1 style={S.title}>Vérifie ton email</h1>
-            <p style={S.sub}>Code envoyé à{' '}
+            <p style={S.sub}>Un lien de vérification a été envoyé à{' '}
               <strong style={{color:'#4f8ef7'}}>{form.email}</strong></p>
-            <div style={S.otpRow}>
-              {otp.map((v, i) => (
-                <input key={i} ref={el => otpRefs.current[i] = el}
-                  style={S.otpBox} maxLength={1} value={v}
-                  onChange={e => handleOtp(i, e.target.value)}
-                  onKeyDown={e => e.key==='Backspace' && !v && i>0
-                    && otpRefs.current[i-1]?.focus()} />
-              ))}
-            </div>
+            <p style={{...S.sub, marginBottom:22}}>
+              Clique sur le lien dans l'email, puis reviens ici et connecte-toi.
+            </p>
             <button style={S.btn} onClick={handleVerify} disabled={loading}>
-              {loading ? 'Vérification...' : 'Confirmer mon compte'}
+              {loading ? 'Vérification...' : "Aller à la connexion"}
             </button>
             <p style={{...S.sw, marginTop:14}}>Pas reçu ?{' '}
-              <span style={S.lnk} onClick={() => handleRegister()}>Renvoyer</span></p>
+              <span style={S.lnk} onClick={handleResend}>Renvoyer</span></p>
           </div>
         </>}
       </div>
@@ -159,29 +163,24 @@ function F({ label, type='text', placeholder, value, onChange }) {
 }
 
 const S = {
-  wrap:   { minHeight:'100vh', display:'grid', placeItems:'center', background:'#0d0f14' },
-  card:   { width:420, background:'#13161e', border:'1px solid #252938', borderRadius:24, padding:'40px 36px' },
-  logo:   { display:'flex', alignItems:'center', gap:10, marginBottom:26 },
-  logoTxt:{ fontFamily:'Syne,sans-serif', fontWeight:800, fontSize:20, color:'#4f8ef7' },
-  title:  { fontFamily:'Syne,sans-serif', fontWeight:700, fontSize:24, marginBottom:6 },
-  sub:    { color:'#5a6075', fontSize:14, marginBottom:22, lineHeight:1.5 },
-  lbl:    { display:'block', fontSize:13, color:'#5a6075', marginBottom:6 },
-  inp:    { width:'100%', background:'#1a1e28', border:'1px solid #252938', borderRadius:10,
-            padding:'11px 14px', color:'#e8eaf0', fontFamily:'DM Sans,sans-serif',
-            fontSize:14, outline:'none', appearance:'none' },
-  btn:    { display:'block', width:'100%', background:'linear-gradient(135deg,#4f8ef7,#7c6af7)',
-            color:'white', border:'none', borderRadius:10, padding:13,
-            fontFamily:'Syne,sans-serif', fontWeight:600, fontSize:15,
-            cursor:'pointer', marginTop:8 },
-  sw:     { textAlign:'center', marginTop:16, fontSize:13, color:'#5a6075' },
-  lnk:    { color:'#4f8ef7', cursor:'pointer', fontWeight:500 },
-  err:    { background:'rgba(249,115,22,.1)', color:'#f97316',
-            border:'1px solid rgba(249,115,22,.25)',
-            borderRadius:8, padding:'10px 14px', fontSize:13, marginBottom:14 },
-  badge:  { color:'#3ecf8e', fontSize:12, fontWeight:500, marginBottom:10 },
-  otpRow: { display:'flex', gap:10, justifyContent:'center', margin:'20px 0' },
-  otpBox: { width:50, height:56, background:'#1a1e28', border:'1.5px solid #252938',
-            borderRadius:12, textAlign:'center', fontSize:22,
-            fontFamily:'Syne,sans-serif', fontWeight:700,
-            color:'#e8eaf0', outline:'none' },
+  wrap:    { minHeight:'100vh', display:'grid', placeItems:'center', background:'#0d0f14' },
+  card:    { width:420, background:'#13161e', border:'1px solid #252938', borderRadius:24, padding:'40px 36px' },
+  logo:    { display:'flex', alignItems:'center', gap:10, marginBottom:26 },
+  logoTxt: { fontFamily:'Syne,sans-serif', fontWeight:800, fontSize:20, color:'#4f8ef7' },
+  title:   { fontFamily:'Syne,sans-serif', fontWeight:700, fontSize:24, marginBottom:6 },
+  sub:     { color:'#5a6075', fontSize:14, marginBottom:22, lineHeight:1.5 },
+  lbl:     { display:'block', fontSize:13, color:'#5a6075', marginBottom:6 },
+  inp:     { width:'100%', background:'#1a1e28', border:'1px solid #252938', borderRadius:10,
+             padding:'11px 14px', color:'#e8eaf0', fontFamily:'DM Sans,sans-serif',
+             fontSize:14, outline:'none', appearance:'none' },
+  btn:     { display:'block', width:'100%', background:'linear-gradient(135deg,#4f8ef7,#7c6af7)',
+             color:'white', border:'none', borderRadius:10, padding:13,
+             fontFamily:'Syne,sans-serif', fontWeight:600, fontSize:15,
+             cursor:'pointer', marginTop:8 },
+  sw:      { textAlign:'center', marginTop:16, fontSize:13, color:'#5a6075' },
+  lnk:     { color:'#4f8ef7', cursor:'pointer', fontWeight:500 },
+  err:     { background:'rgba(249,115,22,.1)', color:'#f97316',
+             border:'1px solid rgba(249,115,22,.25)',
+             borderRadius:8, padding:'10px 14px', fontSize:13, marginBottom:14 },
+  badge:   { color:'#3ecf8e', fontSize:12, fontWeight:500, marginBottom:10 },
 };
